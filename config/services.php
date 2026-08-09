@@ -44,6 +44,8 @@ return [
         'b2c_shortcode' => env('MPESA_B2C_SHORTCODE', '600192'),
         'initiator_name' => env('MPESA_INITIATOR_NAME', 'testapi'),
         'b2c_password' => env('MPESA_B2C_PASSWORD'),
+        'b2c_command_id' => env('MPESA_B2C_COMMAND_ID', 'BusinessPayment'),
+        'cert_path' => env('MPESA_CERT_PATH'),
         'callback_url' => env('MPESA_CALLBACK_URL'),
     ],
 

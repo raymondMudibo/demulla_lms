@@ -209,6 +209,27 @@ const getInstallmentStatusClass = (status) => {
                                             <p class="text-xs font-bold text-amber-900">B2C Payout Dispatched — Awaiting M-Pesa Callback</p>
                                         </div>
                                         <p class="text-[11px] text-amber-700 mt-1">Transaction reference: <span class="font-mono">{{ loan.disbursements.find(d => d.status === 'initiated')?.reference }}</span></p>
+                                        <div class="mt-3 pt-2.5 border-t border-amber-200 flex items-center justify-between">
+                                            <span class="text-[11px] font-medium text-amber-800">Simulate M-Pesa Response:</span>
+                                            <div class="flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    @click="triggerB2cSimulation(loan.disbursements.find(d => d.status === 'initiated')?.reference, 'success')"
+                                                    :disabled="simulateB2cForm.processing"
+                                                    class="inline-flex items-center px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-[11px] font-medium transition shadow-sm"
+                                                >
+                                                    Simulate Success
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    @click="triggerB2cSimulation(loan.disbursements.find(d => d.status === 'initiated')?.reference, 'failed')"
+                                                    :disabled="simulateB2cForm.processing"
+                                                    class="inline-flex items-center px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-medium transition shadow-sm"
+                                                >
+                                                    Simulate Failure
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
 
                                     <!-- If previous disbursement failed, show Retry banner and button -->

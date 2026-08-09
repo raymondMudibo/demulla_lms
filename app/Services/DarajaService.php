@@ -23,6 +23,10 @@ class DarajaService
 
     protected ?string $b2cPassword;
 
+    protected string $b2cCommandId;
+
+    protected ?string $certPath;
+
     protected ?string $callbackUrl;
 
     public function __construct()
@@ -40,6 +44,8 @@ class DarajaService
         $this->b2cShortcode = $config['b2c_shortcode'] ?? '600192';
         $this->initiatorName = $config['initiator_name'] ?? 'testapi';
         $this->b2cPassword = $config['b2c_password'] ?? null;
+        $this->b2cCommandId = $config['b2c_command_id'] ?? 'BusinessPayment';
+        $this->certPath = $config['cert_path'] ?? null;
         $this->callbackUrl = $config['callback_url'] ?? null;
     }
 
@@ -226,11 +232,12 @@ class DarajaService
         }
 
         $callback = ($this->callbackUrl ?: url('/')).'/api/daraja/b2c-callback/'.$reference;
+        $securityCredential = $this->getSecurityCredential();
 
         $payload = [
             'InitiatorName' => $this->initiatorName,
-            'SecurityCredential' => $this->b2cPassword, // For sandbox, use B2C plain initiator password or encrypted credential from dev portal
-            'CommandID' => 'PromotionPayment',
+            'SecurityCredential' => $securityCredential,
+            'CommandID' => $this->b2cCommandId,
             'Amount' => (int) round($amount),
             'PartyA' => $this->b2cShortcode,
             'PartyB' => $formattedPhone,
@@ -263,6 +270,30 @@ class DarajaService
 
             return ['success' => false, 'message' => $e->getMessage()];
         }
+    }
+
+    public function getSecurityCredential(): ?string
+    {
+        if (empty($this->b2cPassword)) {
+            return null;
+        }
+
+        // If it is already an encrypted base64 string (> 100 characters and valid base64)
+        if (strlen($this->b2cPassword) > 100 && base64_decode($this->b2cPassword, true) !== false) {
+            return $this->b2cPassword;
+        }
+
+        // If a plain password was provided, attempt OpenSSL RSA PKCS1 encryption with public certificate
+        $certPath = $this->certPath ?: storage_path('certs/SandboxCertificate.cer');
+        if (file_exists($certPath)) {
+            $certContent = file_get_contents($certPath);
+            $pubKey = openssl_pkey_get_public($certContent);
+            if ($pubKey && openssl_public_encrypt($this->b2cPassword, $encrypted, $pubKey, OPENSSL_PKCS1_PADDING)) {
+                return base64_encode($encrypted);
+            }
+        }
+
+        return $this->b2cPassword;
     }
 
     protected function formatPhoneNumber(string $phone): string
