@@ -79,7 +79,7 @@ class PortalLoanController extends Controller
             'phone_number' => ['required', 'string', 'regex:/^(254|0|\+254)?(7|1)\d{8}$/'],
         ]);
 
-        // Normalize phone number to 254...
+        // Normalize phone number to 254..
         $phone = preg_replace('/\D/', '', $validated['phone_number']);
         if (str_starts_with($phone, '0')) {
             $phone = '254'.substr($phone, 1);

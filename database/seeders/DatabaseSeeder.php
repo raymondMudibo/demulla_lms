@@ -41,6 +41,8 @@ class DatabaseSeeder extends Seeder
             ['email' => 'john@example.com'],
             [
                 'name' => 'John Doe',
+                'phone_number' => '254712345678',
+                'id_number' => '12345678',
                 'password' => Hash::make('password'),
                 'role' => 'customer',
                 'customer_id' => $customer1->id,
@@ -61,6 +63,8 @@ class DatabaseSeeder extends Seeder
             ['email' => 'jane@example.com'],
             [
                 'name' => 'Jane Smith',
+                'phone_number' => '254787654321',
+                'id_number' => '87654321',
                 'password' => Hash::make('password'),
                 'role' => 'customer',
                 'customer_id' => $customer2->id,
