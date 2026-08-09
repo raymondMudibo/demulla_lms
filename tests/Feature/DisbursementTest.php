@@ -55,7 +55,7 @@ class DisbursementTest extends TestCase
         // 2. Admin approves loan
         $response = $this->actingAs($admin)->post("/admin/loans/{$loan->id}/approve");
         $response->assertRedirect();
-        
+
         $loan->refresh();
         $this->assertEquals('approved', $loan->status);
         $this->assertNotNull($loan->approved_at);
@@ -63,22 +63,22 @@ class DisbursementTest extends TestCase
         $this->assertEquals(0, $loan->installments()->count());
 
         // 3. Admin initiates B2C Disbursement
+        // State mutation prevented on initial HTTP response: disbursement is 'initiated', loan remains 'approved'
         $response = $this->actingAs($admin)->post("/admin/loans/{$loan->id}/disburse");
         $response->assertRedirect();
 
         $loan->refresh();
         $this->assertEquals(1, $loan->disbursements()->count());
         $disbursement = $loan->disbursements()->first();
-        
-        // Primary transition verified: Loan is active and schedule is live immediately upon disburse
-        $this->assertEquals('successful', $disbursement->status);
-        $this->assertEquals('active', $loan->status);
-        $this->assertNotNull($loan->disbursed_at);
-        $this->assertEquals(3, $loan->installments()->count());
+
+        $this->assertEquals('initiated', $disbursement->status);
+        $this->assertEquals('approved', $loan->status);
+        $this->assertNull($loan->disbursed_at);
+        $this->assertEquals(0, $loan->installments()->count()); // Installments not active yet
         $this->assertEquals(10000.00, (float) $disbursement->amount);
         $this->assertEquals('254712345678', $disbursement->phone_number);
 
-        // 4. Safaricom B2C Webhook Callback Received (Fallback Reconciliation)
+        // 4. Safaricom B2C Webhook Callback Received (Success)
         $callbackPayload = [
             'Result' => [
                 'ResultCode' => 0,
@@ -97,7 +97,6 @@ class DisbursementTest extends TestCase
         $loan->refresh();
         $disbursement->refresh();
 
-        // Audit check updated with exact Safaricom receipt
         $this->assertEquals('successful', $disbursement->status);
         $this->assertEquals('QW99887766', $disbursement->mpesa_receipt_number);
         $this->assertNotNull($disbursement->disbursed_at);
@@ -112,8 +111,9 @@ class DisbursementTest extends TestCase
             'processing_status' => 'processed',
         ]);
 
-        // Loan state check
+        // Loan state check: now active
         $this->assertEquals('active', $loan->status);
+        $this->assertNotNull($loan->disbursed_at);
         $this->assertFalse($loan->canBeDisbursed());
 
         // Installment schedule check: 3 monthly installments generated and live
@@ -123,9 +123,104 @@ class DisbursementTest extends TestCase
         $this->assertEquals('pending', $installments[0]->status);
         $this->assertEquals(13000.00, round($installments->sum('total_amount'), 2));
 
-        // 6. Verification of one-way idempotency: cannot disburse again
+        // 6. Test Idempotency on duplicate webhook delivery
+        $duplicateCallbackResponse = $this->postJson("/api/daraja/b2c-callback/{$disbursement->reference}", $callbackPayload);
+        $duplicateCallbackResponse->assertStatus(200);
+
+        $loan->refresh();
+        $this->assertEquals(3, $loan->installments()->count());
+        $this->assertEquals(1, $loan->disbursements()->count());
+
+        // 7. Cannot disburse again once loan is active
         $secondDisburseResponse = $this->actingAs($admin)->post("/admin/loans/{$loan->id}/disburse");
         $secondDisburseResponse->assertRedirect();
-        $this->assertEquals(1, $loan->disbursements()->count()); // Still 1 disbursement
+        $this->assertEquals(1, $loan->disbursements()->count());
+    }
+
+    public function test_failed_b2c_disbursement_keeps_loan_approved_and_allows_retry(): void
+    {
+        $admin = User::factory()->create([
+            'role' => 'admin',
+        ]);
+
+        $customer = Customer::create([
+            'name' => 'Bob Miller',
+            'phone_number' => '254722334455',
+            'id_number' => '87654321',
+            'email' => 'bob@example.com',
+        ]);
+
+        $product = LoanProduct::create([
+            'name' => 'Quick Cash 1-Month',
+            'interest_rate' => 5.00,
+            'interest_type' => 'flat',
+            'term_length' => 1,
+            'term_unit' => 'months',
+        ]);
+
+        $loan = Loan::create([
+            'loan_account_number' => 'LN-BOB0001',
+            'customer_id' => $customer->id,
+            'loan_product_id' => $product->id,
+            'principal_amount' => 5000.00,
+            'interest_amount' => 250.00,
+            'total_amount' => 5250.00,
+            'balance' => 5250.00,
+            'status' => 'approved',
+            'approved_at' => now(),
+        ]);
+
+        // 1. Initiate 1st disbursement attempt
+        $this->actingAs($admin)->post("/admin/loans/{$loan->id}/disburse");
+        $loan->refresh();
+        $firstDisbursement = $loan->disbursements()->first();
+        $this->assertEquals('initiated', $firstDisbursement->status);
+
+        // 2. Callback returns failure (e.g. insufficient funds in B2C utility account)
+        $failPayload = [
+            'Result' => [
+                'ResultCode' => 2001,
+                'ResultDesc' => 'Insufficient funds in corporate utility wallet.',
+            ],
+        ];
+
+        $this->postJson("/api/daraja/b2c-callback/{$firstDisbursement->reference}", $failPayload);
+
+        $firstDisbursement->refresh();
+        $loan->refresh();
+
+        $this->assertEquals('failed', $firstDisbursement->status);
+        $this->assertEquals('Insufficient funds in corporate utility wallet.', $firstDisbursement->failure_reason);
+        // Loan stays 'approved' so admin can re-try
+        $this->assertEquals('approved', $loan->status);
+        $this->assertTrue($loan->canBeDisbursed());
+        $this->assertEquals(0, $loan->installments()->count());
+
+        // 3. Admin Retries Disbursement
+        $this->actingAs($admin)->post("/admin/loans/{$loan->id}/disburse");
+        $loan->refresh();
+        $this->assertEquals(2, $loan->disbursements()->count());
+
+        $retryDisbursement = $loan->disbursements()->orderBy('id', 'desc')->first();
+        $this->assertEquals('initiated', $retryDisbursement->status);
+
+        // 4. Successful callback on retry
+        $successPayload = [
+            'Result' => [
+                'ResultCode' => 0,
+                'ResultDesc' => 'Success',
+                'TransactionID' => 'NL99112233',
+            ],
+        ];
+
+        $this->postJson("/api/daraja/b2c-callback/{$retryDisbursement->reference}", $successPayload);
+
+        $retryDisbursement->refresh();
+        $loan->refresh();
+
+        $this->assertEquals('successful', $retryDisbursement->status);
+        $this->assertEquals('NL99112233', $retryDisbursement->mpesa_receipt_number);
+        $this->assertEquals('active', $loan->status);
+        $this->assertEquals(1, $loan->installments()->count());
     }
 }

@@ -197,16 +197,54 @@ const getInstallmentStatusClass = (status) => {
                                     </button>
                                 </div>
 
-                                <!-- Disburse Trigger -->
-                                <div v-if="loan.status === 'approved'">
-                                    <p class="text-xs text-gray-500 mb-2">Execute B2C payout. Funds will be transferred from corporate M-Pesa account directly to customer's mobile number.</p>
-                                    <button
-                                        @click="handleDisburse"
-                                        :disabled="disburseForm.processing"
-                                        class="w-full justify-center inline-flex items-center rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-purple-500 transition"
-                                    >
-                                        {{ disburseForm.processing ? 'Initiating Payout...' : 'Disburse Payout (M-Pesa B2C)' }}
-                                    </button>
+                                <!-- Disburse Trigger & Retry Action -->
+                                <div v-if="loan.status === 'approved'" class="space-y-3">
+                                    <!-- If there is an active initiated disbursement awaiting callback -->
+                                    <div v-if="loan.disbursements && loan.disbursements.some(d => d.status === 'initiated')" class="rounded-lg bg-amber-50 border border-amber-200 p-4">
+                                        <div class="flex items-center gap-2">
+                                            <svg class="animate-spin h-4 w-4 text-amber-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                            <p class="text-xs font-bold text-amber-900">B2C Payout Dispatched — Awaiting M-Pesa Callback</p>
+                                        </div>
+                                        <p class="text-[11px] text-amber-700 mt-1">Transaction reference: <span class="font-mono">{{ loan.disbursements.find(d => d.status === 'initiated')?.reference }}</span></p>
+                                    </div>
+
+                                    <!-- If previous disbursement failed, show Retry banner and button -->
+                                    <div v-else-if="loan.disbursements && loan.disbursements.length > 0 && loan.disbursements[0].status === 'failed'" class="space-y-3">
+                                        <div class="rounded-lg bg-red-50 border border-red-200 p-3 text-xs text-red-800">
+                                            <p class="font-bold flex items-center gap-1">
+                                                <svg class="h-4 w-4 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                                                </svg>
+                                                Previous B2C Payout Failed
+                                            </p>
+                                            <p class="mt-1 text-red-700 font-mono text-[11px]">{{ loan.disbursements[0].failure_reason || 'Gateway failure' }}</p>
+                                        </div>
+                                        <button
+                                            @click="handleDisburse"
+                                            :disabled="disburseForm.processing"
+                                            class="w-full justify-center inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 transition"
+                                        >
+                                            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                            </svg>
+                                            {{ disburseForm.processing ? 'Retrying Payout...' : 'Retry Disbursement (M-Pesa B2C)' }}
+                                        </button>
+                                    </div>
+
+                                    <!-- Standard Initial Disbursement -->
+                                    <div v-else>
+                                        <p class="text-xs text-gray-500 mb-2">Execute B2C payout. Funds will be transferred from corporate M-Pesa account directly to customer's mobile number.</p>
+                                        <button
+                                            @click="handleDisburse"
+                                            :disabled="disburseForm.processing"
+                                            class="w-full justify-center inline-flex items-center rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-purple-500 transition"
+                                        >
+                                            {{ disburseForm.processing ? 'Initiating Payout...' : 'Disburse Payout (M-Pesa B2C)' }}
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <div v-if="loan.status === 'rejected'" class="rounded-md bg-red-50 border border-red-200 p-4 text-center">
@@ -229,7 +267,7 @@ const getInstallmentStatusClass = (status) => {
                             <div class="space-y-4">
                                 
                                 <!-- B2C Simulation -->
-                                <div v-if="loan.disbursements.some(d => d.status === 'initiated')">
+                                <div v-if="loan.disbursements && loan.disbursements.some(d => d.status === 'initiated')">
                                     <h4 class="text-xs font-bold text-gray-700 uppercase mb-2">Simulate Disbursement Result</h4>
                                     <div class="flex gap-2">
                                         <button
@@ -248,7 +286,7 @@ const getInstallmentStatusClass = (status) => {
                                 </div>
 
                                 <!-- STK Simulation -->
-                                <div v-if="loan.stk_requests.some(s => s.status === 'pending')">
+                                <div v-if="loan.stk_requests && loan.stk_requests.some(s => s.status === 'pending')">
                                     <h4 class="text-xs font-bold text-gray-700 uppercase mb-2">Simulate STK Repayment Callback</h4>
                                     <div class="grid grid-cols-3 gap-2">
                                         <button
@@ -272,7 +310,7 @@ const getInstallmentStatusClass = (status) => {
                                     </div>
                                 </div>
 
-                                <div v-if="!loan.disbursements.some(d => d.status === 'initiated') && !loan.stk_requests.some(s => s.status === 'pending')">
+                                <div v-if="(!loan.disbursements || !loan.disbursements.some(d => d.status === 'initiated')) && (!loan.stk_requests || !loan.stk_requests.some(s => s.status === 'pending'))">
                                     <p class="text-xs text-gray-500 text-center italic">No active payouts or repayment requests awaiting callbacks.</p>
                                 </div>
                             </div>
@@ -307,7 +345,13 @@ const getInstallmentStatusClass = (status) => {
                                             <td class="px-4 py-3 text-right text-gray-900">KES {{ parseFloat(installment.principal_amount).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
                                             <td class="px-4 py-3 text-right text-gray-900">KES {{ parseFloat(installment.interest_amount).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
                                             <td class="px-4 py-3 text-right text-gray-900 font-semibold">KES {{ parseFloat(installment.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
-                                            <td class="px-4 py-3 text-right text-green-700 font-bold">KES {{ parseFloat(installment.amount_paid).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
+                                            <td class="px-4 py-3 text-right text-green-700 font-bold">
+                                                KES {{ parseFloat(installment.amount_paid).toLocaleString(undefined, {minimumFractionDigits: 2}) }}
+                                                <!-- Partially paid breakdown indicator -->
+                                                <div v-if="installment.status === 'partially_paid'" class="mt-1 text-[11px] font-medium text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block text-left">
+                                                    Rem: KES {{ (parseFloat(installment.total_amount) - parseFloat(installment.amount_paid)).toLocaleString(undefined, {minimumFractionDigits: 2}) }}
+                                                </div>
+                                            </td>
                                             <td class="px-4 py-3 text-center">
                                                 <span
                                                     :class="getInstallmentStatusClass(installment.status)"
@@ -317,9 +361,9 @@ const getInstallmentStatusClass = (status) => {
                                                 </span>
                                             </td>
                                         </tr>
-                                        <tr v-if="loan.installments.length === 0">
+                                        <tr v-if="!loan.installments || loan.installments.length === 0">
                                             <td colspan="7" class="px-4 py-8 text-center text-gray-400 italic">
-                                                No installments schedule generated. App and disburse loan to activate schedule.
+                                                No installments schedule generated. Approve and disburse loan to activate schedule.
                                             </td>
                                         </tr>
                                     </tbody>
@@ -342,7 +386,7 @@ const getInstallmentStatusClass = (status) => {
                                                 <th class="px-3 py-2 text-right font-semibold text-gray-500">Amount</th>
                                                 <th class="px-3 py-2 text-left font-semibold text-gray-500">M-Pesa Receipt</th>
                                                 <th class="px-3 py-2 text-center font-semibold text-gray-500">Status</th>
-                                                <th class="px-3 py-2 text-left font-semibold text-gray-500">Disbursed At</th>
+                                                <th class="px-3 py-2 text-left font-semibold text-gray-500">Disbursed At / Failure Note</th>
                                             </tr>
                                         </thead>
                                         <tbody class="divide-y divide-gray-100 bg-white">
@@ -351,13 +395,23 @@ const getInstallmentStatusClass = (status) => {
                                                 <td class="px-3 py-2 text-right text-gray-900 font-semibold">KES {{ parseFloat(d.amount).toLocaleString() }}</td>
                                                 <td class="px-3 py-2 text-gray-900 font-mono">{{ d.mpesa_receipt_number || '-' }}</td>
                                                 <td class="px-3 py-2 text-center">
-                                                    <span :class="d.status === 'successful' ? 'bg-green-100 text-green-800' : (d.status === 'failed' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800')" class="px-2 py-0.5 rounded text-[10px] font-bold uppercase">
+                                                    <span :class="d.status === 'successful' ? 'bg-green-100 text-green-800 border border-green-200' : (d.status === 'failed' ? 'bg-red-100 text-red-800 border border-red-200' : 'bg-yellow-100 text-yellow-800 border border-yellow-200')" class="px-2 py-0.5 rounded text-[10px] font-bold uppercase">
                                                         {{ d.status }}
                                                     </span>
                                                 </td>
-                                                <td class="px-3 py-2 text-gray-500">{{ d.disbursed_at ? new Date(d.disbursed_at).toLocaleString() : '-' }}</td>
+                                                <td class="px-3 py-2 text-gray-500">
+                                                    <div v-if="d.status === 'successful'">
+                                                        {{ d.disbursed_at ? new Date(d.disbursed_at).toLocaleString() : '-' }}
+                                                    </div>
+                                                    <div v-else-if="d.status === 'failed'" class="text-red-600 font-mono text-[11px] truncate max-w-[200px]" :title="d.failure_reason">
+                                                        {{ d.failure_reason || 'Failed' }}
+                                                    </div>
+                                                    <div v-else class="text-amber-600 italic">
+                                                        Pending webhook callback
+                                                    </div>
+                                                </td>
                                             </tr>
-                                            <tr v-if="loan.disbursements.length === 0">
+                                            <tr v-if="!loan.disbursements || loan.disbursements.length === 0">
                                                 <td colspan="5" class="px-3 py-4 text-center text-gray-400 italic">No disbursement payout history logs.</td>
                                             </tr>
                                         </tbody>
@@ -383,13 +437,22 @@ const getInstallmentStatusClass = (status) => {
                                                 <td class="px-3 py-2 font-mono text-gray-500 truncate max-w-[120px]" :title="stk.checkout_reference">{{ stk.checkout_reference }}</td>
                                                 <td class="px-3 py-2 text-right text-gray-900 font-semibold">KES {{ parseFloat(stk.amount_requested).toLocaleString() }}</td>
                                                 <td class="px-3 py-2 text-center">
-                                                    <span :class="stk.status === 'completed' ? 'bg-green-100 text-green-800' : (stk.status === 'failed' || stk.status === 'cancelled' ? 'bg-red-100 text-red-800' : (stk.status === 'mismatched' ? 'bg-orange-100 text-orange-800' : 'bg-yellow-100 text-yellow-800'))" class="px-2 py-0.5 rounded text-[10px] font-bold uppercase">
+                                                    <span
+                                                        :class="{
+                                                            'bg-green-100 text-green-800 border border-green-200': stk.status === 'completed',
+                                                            'bg-amber-100 text-amber-800 border border-amber-300 font-extrabold': stk.status === 'mismatched',
+                                                            'bg-red-100 text-red-800 border border-red-200': stk.status === 'failed' || stk.status === 'cancelled',
+                                                            'bg-yellow-100 text-yellow-800 border border-yellow-200': stk.status === 'pending'
+                                                        }"
+                                                        class="px-2 py-0.5 rounded text-[10px] uppercase inline-flex items-center gap-1"
+                                                    >
+                                                        <span v-if="stk.status === 'mismatched'">⚠️</span>
                                                         {{ stk.status }}
                                                     </span>
                                                 </td>
                                                 <td class="px-3 py-2 text-gray-500">{{ new Date(stk.created_at).toLocaleString() }}</td>
                                             </tr>
-                                            <tr v-if="loan.stk_requests.length === 0">
+                                            <tr v-if="!loan.stk_requests || loan.stk_requests.length === 0">
                                                 <td colspan="4" class="px-3 py-4 text-center text-gray-400 italic">No STK requests submitted.</td>
                                             </tr>
                                         </tbody>
@@ -417,7 +480,7 @@ const getInstallmentStatusClass = (status) => {
                                                 <td class="px-3 py-2 text-gray-600">+{{ p.payer_phone_number }}</td>
                                                 <td class="px-3 py-2 text-gray-500">{{ new Date(p.paid_at).toLocaleString() }}</td>
                                             </tr>
-                                            <tr v-if="loan.payments.length === 0">
+                                            <tr v-if="!loan.payments || loan.payments.length === 0">
                                                 <td colspan="4" class="px-3 py-4 text-center text-gray-400 italic">No payments processed.</td>
                                             </tr>
                                         </tbody>

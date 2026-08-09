@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Disbursement;
 use App\Models\Loan;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -24,16 +25,25 @@ class DisbursementService
     public function initiateDisbursement(Loan $loan): array
     {
         return DB::transaction(function () use ($loan) {
-            if (! $loan->canBeDisbursed()) {
+            $lockedLoan = Loan::where('id', $loan->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (! $lockedLoan->canBeDisbursed()) {
                 return ['success' => false, 'message' => 'Loan is not in a status that can be disbursed.'];
             }
 
+            // Check if there is already an active initiated disbursement awaiting callback
+            if ($lockedLoan->disbursements()->where('status', 'initiated')->exists()) {
+                return ['success' => false, 'message' => 'A disbursement request is already in progress for this loan.'];
+            }
+
             $reference = (string) Str::uuid();
-            $phoneNumber = $loan->customer->phone_number;
-            $amount = (float) $loan->principal_amount;
+            $phoneNumber = $lockedLoan->customer->phone_number;
+            $amount = (float) $lockedLoan->principal_amount;
 
             $disbursement = Disbursement::create([
-                'loan_id' => $loan->id,
+                'loan_id' => $lockedLoan->id,
                 'reference' => $reference,
                 'amount' => $amount,
                 'phone_number' => $phoneNumber,
@@ -44,30 +54,17 @@ class DisbursementService
             $response = $this->darajaService->initiateB2cDisbursement($reference, $amount, $phoneNumber);
 
             if ($response['success']) {
-                $receiptNumber = $response['transaction_id'] ?? ('B2C_'.strtoupper(Str::random(8)));
-
-                // Primary transition: directly disburse and activate loan
                 $disbursement->update([
-                    'status' => 'successful',
-                    'mpesa_receipt_number' => $receiptNumber,
                     'conversation_id' => $response['conversation_id'] ?? null,
                     'originator_conversation_id' => $response['originator_conversation_id'] ?? null,
                     'raw_callback_payload' => $response,
-                    'disbursed_at' => now(),
                 ]);
 
-                $loan->update([
-                    'status' => 'active',
-                    'disbursed_at' => now(),
-                ]);
-
-                // Make the installment schedule live immediately
-                $this->loanService->generateInstallmentSchedule($loan, Carbon::today());
-
+                // Maintain loan in 'approved' state until webhook callback confirms success
                 $isSim = $response['is_simulation'] ?? false;
                 $msg = $isSim
-                    ? 'Loan payout disbursed successfully (Sandbox mode). Loan is now active with live repayment schedule.'
-                    : 'Loan payout disbursed successfully via M-Pesa B2C. Loan is now active with live repayment schedule.';
+                    ? 'B2C Payout request initiated (Sandbox mode). Awaiting M-Pesa result callback to activate loan.'
+                    : 'B2C Payout request dispatched to M-Pesa. Awaiting webhook result callback confirmation.';
 
                 return [
                     'success' => true,
@@ -78,7 +75,8 @@ class DisbursementService
             } else {
                 $disbursement->update([
                     'status' => 'failed',
-                    'failure_reason' => $response['message'] ?? 'Initial B2C call failed',
+                    'failure_reason' => $response['message'] ?? 'Initial B2C gateway call failed',
+                    'raw_callback_payload' => $response,
                 ]);
 
                 return [
@@ -91,69 +89,81 @@ class DisbursementService
 
     public function processB2cCallback(string $reference, array $payload): void
     {
-        DB::transaction(function () use ($reference, $payload) {
-            $disbursement = Disbursement::where('reference', $reference)
-                ->lockForUpdate()
-                ->firstOrFail();
+        Cache::lock("b2c_lock_{$reference}", 10)->block(5, function () use ($reference, $payload) {
+            DB::transaction(function () use ($reference, $payload) {
+                $disbursement = Disbursement::where('reference', $reference)
+                    ->lockForUpdate()
+                    ->first();
 
-            // Parse result from Safaricom B2C payload
-            $result = $payload['Result'] ?? $payload;
-            $resultCode = $result['ResultCode'] ?? 1;
-            $resultDesc = $result['ResultDesc'] ?? 'Unknown error';
-            $conversationId = $result['ConversationID'] ?? null;
-            $originatorConversationId = $result['OriginatorConversationID'] ?? null;
+                if (! $disbursement) {
+                    Log::warning("B2C disbursement record not found for reference: {$reference}");
 
-            // Extract transaction ID if present
-            $transactionId = $result['TransactionID'] ?? null;
-            if (! $transactionId && isset($result['ResultParameters']['ResultParameter'])) {
-                foreach ($result['ResultParameters']['ResultParameter'] as $param) {
-                    if (($param['Key'] ?? '') === 'ReceiptNo' || ($param['Name'] ?? '') === 'TransactionID') {
-                        $transactionId = $param['Value'] ?? $transactionId;
+                    return;
+                }
+
+                // Check idempotency (prevent double disbursement processing)
+                if ($disbursement->status !== 'initiated') {
+                    Log::warning("B2C callback already processed for reference: {$reference}, status: {$disbursement->status}");
+
+                    return;
+                }
+
+                $loan = Loan::where('id', $disbursement->loan_id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                // Parse result from Safaricom B2C payload
+                $result = $payload['Result'] ?? $payload;
+                $resultCode = isset($result['ResultCode']) ? (int) $result['ResultCode'] : 1;
+                $resultDesc = $result['ResultDesc'] ?? 'Unknown error';
+                $conversationId = $result['ConversationID'] ?? null;
+                $originatorConversationId = $result['OriginatorConversationID'] ?? null;
+
+                // Extract transaction ID if present
+                $transactionId = $result['TransactionID'] ?? null;
+                if (! $transactionId && isset($result['ResultParameters']['ResultParameter'])) {
+                    foreach ($result['ResultParameters']['ResultParameter'] as $param) {
+                        if (($param['Key'] ?? '') === 'ReceiptNo' || ($param['Name'] ?? '') === 'TransactionID') {
+                            $transactionId = $param['Value'] ?? $transactionId;
+                        }
                     }
                 }
-            }
 
-            // If loan was already disbursed/active primarily, update metadata as fallback
-            if ($disbursement->status === 'successful') {
-                $disbursement->update([
-                    'raw_callback_payload' => $payload,
-                    'mpesa_receipt_number' => $transactionId ?: $disbursement->mpesa_receipt_number,
-                    'conversation_id' => $conversationId ?: $disbursement->conversation_id,
-                    'originator_conversation_id' => $originatorConversationId ?: $disbursement->originator_conversation_id,
-                ]);
+                if ($resultCode === 0) {
+                    // Successful B2C payout
+                    $receiptNumber = $transactionId ?: ('B2C_'.strtoupper(Str::random(8)));
 
-                return;
-            }
-
-            // Fallback activation if previously still in 'initiated' state
-            if ($resultCode === 0) {
-                $disbursement->update([
-                    'status' => 'successful',
-                    'mpesa_receipt_number' => $transactionId ?: ('B2C_'.strtoupper(Str::random(8))),
-                    'raw_callback_payload' => $payload,
-                    'disbursed_at' => now(),
-                    'conversation_id' => $conversationId ?: $disbursement->conversation_id,
-                    'originator_conversation_id' => $originatorConversationId ?: $disbursement->originator_conversation_id,
-                ]);
-
-                $loan = $disbursement->loan;
-                if ($loan->status !== 'active') {
-                    $loan->update([
-                        'status' => 'active',
+                    $disbursement->update([
+                        'status' => 'successful',
+                        'mpesa_receipt_number' => $receiptNumber,
+                        'raw_callback_payload' => $payload,
                         'disbursed_at' => now(),
+                        'conversation_id' => $conversationId ?: $disbursement->conversation_id,
+                        'originator_conversation_id' => $originatorConversationId ?: $disbursement->originator_conversation_id,
                     ]);
 
-                    $this->loanService->generateInstallmentSchedule($loan, Carbon::today());
+                    // Transition loan to active and generate live installment schedule
+                    if ($loan->status !== 'active') {
+                        $loan->update([
+                            'status' => 'active',
+                            'disbursed_at' => now(),
+                        ]);
+
+                        $this->loanService->generateInstallmentSchedule($loan, Carbon::today());
+                    }
+                } else {
+                    // Failed B2C payout: record failure and leave loan in 'approved' status for admin retry
+                    $disbursement->update([
+                        'status' => 'failed',
+                        'failure_reason' => $resultDesc,
+                        'raw_callback_payload' => $payload,
+                        'conversation_id' => $conversationId ?: $disbursement->conversation_id,
+                        'originator_conversation_id' => $originatorConversationId ?: $disbursement->originator_conversation_id,
+                    ]);
+
+                    Log::warning("B2C Disbursement failed for Reference {$reference}: {$resultDesc}");
                 }
-            } else {
-                $disbursement->update([
-                    'status' => 'failed',
-                    'failure_reason' => $resultDesc,
-                    'raw_callback_payload' => $payload,
-                    'conversation_id' => $conversationId ?: $disbursement->conversation_id,
-                    'originator_conversation_id' => $originatorConversationId ?: $disbursement->originator_conversation_id,
-                ]);
-            }
+            });
         });
     }
 }

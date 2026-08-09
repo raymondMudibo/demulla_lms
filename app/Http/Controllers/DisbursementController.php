@@ -66,21 +66,21 @@ class DisbursementController extends Controller
         try {
             $this->disbursementService->processB2cCallback($reference, $payload);
             $callbackLog->update(['processing_status' => 'processed']);
-
-            return response()->json([
-                'ResultCode' => 0,
-                'ResultDesc' => 'Success',
-            ]);
         } catch (\Exception $e) {
+            Log::error("Failed to process B2C callback for {$reference}: ".$e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             $callbackLog->update([
                 'processing_status' => 'failed',
                 'error_message' => $e->getMessage(),
             ]);
-
-            return response()->json([
-                'ResultCode' => 1,
-                'ResultDesc' => $e->getMessage(),
-            ], 500);
         }
+
+        // Always acknowledge 200 OK to Safaricom B2C webhook engine
+        return response()->json([
+            'ResultCode' => 0,
+            'ResultDesc' => 'Success',
+        ], 200);
     }
 }

@@ -55,7 +55,7 @@ class PaymentController extends Controller
         $payload = $request->all();
         $stkCallback = $payload['Body']['stkCallback'] ?? $payload;
 
-        // Persist callback directly to the database
+        // Persist callback directly to the database for auditing
         $callbackLog = MpesaCallbackLog::create([
             'type' => 'stk_callback',
             'reference' => $checkout_reference,
@@ -71,21 +71,26 @@ class PaymentController extends Controller
         try {
             $this->reconciliationService->processStkCallback($checkout_reference, $payload);
             $callbackLog->update(['processing_status' => 'processed']);
-
-            return response()->json([
-                'ResultCode' => 0,
-                'ResultDesc' => 'Success',
-            ]);
         } catch (\Exception $e) {
+            Log::error("Failed to process STK callback for {$checkout_reference}: ".$e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             $callbackLog->update([
                 'processing_status' => 'failed',
                 'error_message' => $e->getMessage(),
             ]);
-
-            return response()->json([
-                'ResultCode' => 1,
-                'ResultDesc' => $e->getMessage(),
-            ], 500);
         }
+
+        // Always return 200 OK to Safaricom webhook gateway to acknowledge receipt
+        return response()->json([
+            'ResultCode' => 0,
+            'ResultDesc' => 'Success',
+        ], 200);
+    }
+
+    public function callback(Request $request, string $checkout_reference): JsonResponse
+    {
+        return $this->handleStkCallback($request, $checkout_reference);
     }
 }

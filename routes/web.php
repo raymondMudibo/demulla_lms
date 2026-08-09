@@ -14,6 +14,9 @@ Route::get('/', function () {
     ]);
 });
 
+use App\Http\Controllers\Admin\CustomerController;
+use App\Http\Controllers\Admin\LoanController;
+use App\Http\Controllers\Admin\LoanProductController;
 use App\Http\Controllers\DisbursementController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\Portal\PortalDashboardController;
@@ -32,17 +35,17 @@ Route::get('/dashboard', function () {
 // Admin Space
 Route::middleware(['auth', 'role:admin'])->prefix('admin')->name('admin.')->group(function () {
     // Customers
-    Route::get('/customers', [App\Http\Controllers\Admin\CustomerController::class, 'index'])->name('customers.index');
+    Route::get('/customers', [CustomerController::class, 'index'])->name('customers.index');
 
     // Loan Products
-    Route::get('/loan-products', [App\Http\Controllers\Admin\LoanProductController::class, 'index'])->name('loan-products.index');
-    Route::post('/loan-products', [App\Http\Controllers\Admin\LoanProductController::class, 'store'])->name('loan-products.store');
+    Route::get('/loan-products', [LoanProductController::class, 'index'])->name('loan-products.index');
+    Route::post('/loan-products', [LoanProductController::class, 'store'])->name('loan-products.store');
 
     // Loans & Disbursement
-    Route::get('/loans', [App\Http\Controllers\Admin\LoanController::class, 'index'])->name('loans.index');
-    Route::get('/loans/{loan}', [App\Http\Controllers\Admin\LoanController::class, 'show'])->name('loans.show');
-    Route::post('/loans/{loan}/approve', [App\Http\Controllers\Admin\LoanController::class, 'approve'])->name('loans.approve');
-    Route::post('/loans/{loan}/reject', [App\Http\Controllers\Admin\LoanController::class, 'reject'])->name('loans.reject');
+    Route::get('/loans', [LoanController::class, 'index'])->name('loans.index');
+    Route::get('/loans/{loan}', [LoanController::class, 'show'])->name('loans.show');
+    Route::post('/loans/{loan}/approve', [LoanController::class, 'approve'])->name('loans.approve');
+    Route::post('/loans/{loan}/reject', [LoanController::class, 'reject'])->name('loans.reject');
     Route::post('/loans/{loan}/disburse', [DisbursementController::class, 'disburse'])->name('loans.disburse');
 });
 

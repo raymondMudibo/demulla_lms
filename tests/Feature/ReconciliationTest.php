@@ -5,11 +5,12 @@ namespace Tests\Feature;
 use App\Models\Customer;
 use App\Models\Loan;
 use App\Models\LoanProduct;
-use App\Models\User;
+use App\Models\StkRequest;
 use App\Services\LoanService;
-use App\Services\ReconciliationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class ReconciliationTest extends TestCase
@@ -50,9 +51,9 @@ class ReconciliationTest extends TestCase
         $this->assertEquals(2, $loan->installments()->count());
 
         // 1. Create STK Push Request for KES 8,000 (which covers Installment 1 [6000] in full + partial Installment 2 [2000])
-        $stkRequest = \App\Models\StkRequest::create([
+        $stkRequest = StkRequest::create([
             'loan_id' => $loan->id,
-            'checkout_reference' => (string) \Illuminate\Support\Str::uuid(),
+            'checkout_reference' => (string) Str::uuid(),
             'amount_requested' => 8000.00,
             'phone_number' => '254711223344',
             'status' => 'pending',
@@ -105,9 +106,9 @@ class ReconciliationTest extends TestCase
         $this->assertEquals(1, $loan->payments()->count());
 
         // 5. Final Repayment to Close the Loan: Pay remaining 4000
-        $finalStk = \App\Models\StkRequest::create([
+        $finalStk = StkRequest::create([
             'loan_id' => $loan->id,
-            'checkout_reference' => (string) \Illuminate\Support\Str::uuid(),
+            'checkout_reference' => (string) Str::uuid(),
             'amount_requested' => 4000.00,
             'phone_number' => '254711223344',
             'status' => 'pending',
@@ -133,5 +134,209 @@ class ReconciliationTest extends TestCase
 
         $this->assertEquals(0.00, (float) $loan->balance);
         $this->assertEquals('closed', $loan->status); // Loan lifecycle completed
+    }
+
+    public function test_amount_mismatch_marks_stk_request_mismatched_and_allocates_ledger(): void
+    {
+        $customer = Customer::create([
+            'name' => 'Charlie Day',
+            'phone_number' => '254733445566',
+            'id_number' => '33445566',
+            'email' => 'charlie@example.com',
+        ]);
+
+        $product = LoanProduct::create([
+            'name' => 'Flash Loan 1-Month',
+            'interest_rate' => 10.00,
+            'interest_type' => 'flat',
+            'term_length' => 1,
+            'term_unit' => 'months',
+        ]);
+
+        $loan = Loan::create([
+            'loan_account_number' => 'LN-CHARLIE-01',
+            'customer_id' => $customer->id,
+            'loan_product_id' => $product->id,
+            'principal_amount' => 5000.00,
+            'interest_amount' => 500.00,
+            'total_amount' => 5500.00,
+            'balance' => 5500.00,
+            'status' => 'active',
+            'disbursed_at' => now(),
+        ]);
+
+        app(LoanService::class)->generateInstallmentSchedule($loan, Carbon::today());
+
+        // Create STK request for KES 5,500
+        $stkRequest = StkRequest::create([
+            'loan_id' => $loan->id,
+            'checkout_reference' => (string) Str::uuid(),
+            'amount_requested' => 5500.00,
+            'phone_number' => '254733445566',
+            'status' => 'pending',
+        ]);
+
+        // Customer pays KES 3,000 instead (Amount mismatch)
+        $mismatchedCallbackPayload = [
+            'Body' => [
+                'stkCallback' => [
+                    'ResultCode' => 0,
+                    'ResultDesc' => 'Success',
+                    'CallbackMetadata' => [
+                        'Item' => [
+                            ['Name' => 'Amount', 'Value' => 3000.00],
+                            ['Name' => 'MpesaReceiptNumber', 'Value' => 'MISMATCH123'],
+                            ['Name' => 'PhoneNumber', 'Value' => '254733445566'],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $response = $this->postJson("/api/daraja/stk-callback/{$stkRequest->checkout_reference}", $mismatchedCallbackPayload);
+        $response->assertStatus(200);
+
+        $stkRequest->refresh();
+        $loan->refresh();
+
+        // Auditing status marked 'mismatched'
+        $this->assertEquals('mismatched', $stkRequest->status);
+
+        // Payment record created
+        $this->assertEquals(1, $loan->payments()->count());
+        $payment = $loan->payments()->first();
+        $this->assertEquals(3000.00, (float) $payment->amount_paid);
+
+        // Cascading ledger applied
+        $this->assertEquals(2500.00, (float) $loan->balance); // 5500 - 3000 = 2500 remaining
+        $installment = $loan->installments()->first();
+        $this->assertEquals('partially_paid', $installment->status);
+        $this->assertEquals(3000.00, (float) $installment->amount_paid);
+    }
+
+    public function test_reconcile_pending_stk_requests_command_auto_resolves_orphaned_requests(): void
+    {
+        $customer = Customer::create([
+            'name' => 'David Kim',
+            'phone_number' => '254744556677',
+            'id_number' => '44556677',
+            'email' => 'david@example.com',
+        ]);
+
+        $product = LoanProduct::create([
+            'name' => 'Mini Loan 1-Month',
+            'interest_rate' => 10.00,
+            'interest_type' => 'flat',
+            'term_length' => 1,
+            'term_unit' => 'months',
+        ]);
+
+        $loan = Loan::create([
+            'loan_account_number' => 'LN-DAVID-01',
+            'customer_id' => $customer->id,
+            'loan_product_id' => $product->id,
+            'principal_amount' => 2000.00,
+            'interest_amount' => 200.00,
+            'total_amount' => 2200.00,
+            'balance' => 2200.00,
+            'status' => 'active',
+            'disbursed_at' => now(),
+        ]);
+
+        app(LoanService::class)->generateInstallmentSchedule($loan, Carbon::today());
+
+        // Create pending request created 10 minutes ago
+        $pendingStk = StkRequest::create([
+            'loan_id' => $loan->id,
+            'checkout_reference' => (string) Str::uuid(),
+            'checkout_request_id' => 'ws_CO_TEST_QUERY_123',
+            'merchant_request_id' => 'merch_test_123',
+            'amount_requested' => 2200.00,
+            'phone_number' => '254744556677',
+            'status' => 'pending',
+        ]);
+        DB::table('stk_requests')
+            ->where('id', $pendingStk->id)
+            ->update(['created_at' => now()->subMinutes(10)]);
+
+        // Run artisan command
+        $this->artisan('loans:reconcile-stk')
+            ->expectsOutputToContain('Found 1 pending STK requests older than 5 minutes')
+            ->assertExitCode(0);
+
+        $pendingStk->refresh();
+        $loan->refresh();
+
+        // In sandbox/simulation mode, queryStkStatus returns success -> reconciles to completed and closes loan
+        $this->assertEquals('completed', $pendingStk->status);
+        $this->assertEquals(0.00, (float) $loan->balance);
+        $this->assertEquals('closed', $loan->status);
+    }
+
+    public function test_stk_callback_fast_acknowledgment_returns_200_ok(): void
+    {
+        $customer = Customer::create([
+            'name' => 'Eve Stone',
+            'phone_number' => '254755667788',
+            'id_number' => '55667788',
+            'email' => 'eve@example.com',
+        ]);
+
+        $product = LoanProduct::create([
+            'name' => 'Fast Loan 1-Month',
+            'interest_rate' => 10.00,
+            'interest_type' => 'flat',
+            'term_length' => 1,
+            'term_unit' => 'months',
+        ]);
+
+        $loan = Loan::create([
+            'loan_account_number' => 'LN-EVE-01',
+            'customer_id' => $customer->id,
+            'loan_product_id' => $product->id,
+            'principal_amount' => 1000.00,
+            'interest_amount' => 100.00,
+            'total_amount' => 1100.00,
+            'balance' => 1100.00,
+            'status' => 'active',
+            'disbursed_at' => now(),
+        ]);
+
+        $stkRequest = StkRequest::create([
+            'loan_id' => $loan->id,
+            'checkout_reference' => (string) Str::uuid(),
+            'amount_requested' => 1100.00,
+            'phone_number' => '254755667788',
+            'status' => 'pending',
+        ]);
+
+        $callbackPayload = [
+            'Body' => [
+                'stkCallback' => [
+                    'ResultCode' => 0,
+                    'ResultDesc' => 'Success',
+                    'CallbackMetadata' => [
+                        'Item' => [
+                            ['Name' => 'Amount', 'Value' => 1100.00],
+                            ['Name' => 'MpesaReceiptNumber', 'Value' => 'EVE123456'],
+                            ['Name' => 'PhoneNumber', 'Value' => '254755667788'],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $response = $this->postJson("/api/daraja/stk-callback/{$stkRequest->checkout_reference}", $callbackPayload);
+        $response->assertStatus(200);
+        $response->assertJson([
+            'ResultCode' => 0,
+            'ResultDesc' => 'Success',
+        ]);
+
+        $this->assertDatabaseHas('mpesa_callback_logs', [
+            'type' => 'stk_callback',
+            'reference' => $stkRequest->checkout_reference,
+            'processing_status' => 'processed',
+        ]);
     }
 }

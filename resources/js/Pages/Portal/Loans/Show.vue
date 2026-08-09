@@ -259,7 +259,12 @@ const getInstallmentStatusClass = (status) => {
                                             <td class="px-4 py-3 text-right text-gray-900 font-mono">KES {{ parseFloat(installment.principal_amount).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
                                             <td class="px-4 py-3 text-right text-gray-900 font-mono">KES {{ parseFloat(installment.interest_amount).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
                                             <td class="px-4 py-3 text-right text-gray-900 font-semibold font-mono">KES {{ parseFloat(installment.total_amount).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
-                                            <td class="px-4 py-3 text-right text-green-700 font-bold font-mono">KES {{ parseFloat(installment.amount_paid).toLocaleString(undefined, {minimumFractionDigits: 2}) }}</td>
+                                            <td class="px-4 py-3 text-right text-green-700 font-bold font-mono">
+                                                KES {{ parseFloat(installment.amount_paid).toLocaleString(undefined, {minimumFractionDigits: 2}) }}
+                                                <div v-if="installment.status === 'partially_paid'" class="mt-1 text-[11px] font-sans font-medium text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block text-left">
+                                                    Rem: KES {{ (parseFloat(installment.total_amount) - parseFloat(installment.amount_paid)).toLocaleString(undefined, {minimumFractionDigits: 2}) }}
+                                                </div>
+                                            </td>
                                             <td class="px-4 py-3 text-center">
                                                 <span
                                                     :class="getInstallmentStatusClass(installment.status)"
@@ -269,7 +274,7 @@ const getInstallmentStatusClass = (status) => {
                                                 </span>
                                             </td>
                                         </tr>
-                                        <tr v-if="loan.installments.length === 0">
+                                        <tr v-if="!loan.installments || loan.installments.length === 0">
                                             <td colspan="7" class="px-4 py-8 text-center text-gray-400 italic">
                                                 Schedule will be activated and generated upon successful disbursement of funds.
                                             </td>

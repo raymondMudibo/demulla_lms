@@ -45,6 +45,10 @@ class DarajaService
 
     public function isConfigured(): bool
     {
+        if (app()->environment('testing')) {
+            return false;
+        }
+
         return ! empty($this->consumerKey) &&
                ! empty($this->consumerSecret) &&
                $this->consumerKey !== 'your_consumer_key';
@@ -134,6 +138,66 @@ class DarajaService
             return ['success' => false, 'message' => $response->json('errorMessage') ?? 'STK push execution failed'];
         } catch (\Exception $e) {
             Log::error('Daraja STK Push exception: '.$e->getMessage());
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function queryStkStatus(string $checkoutRequestId): array
+    {
+        if (! $this->isConfigured()) {
+            Log::info("Daraja STK Query [SIMULATION] for CheckoutRequestID: {$checkoutRequestId}");
+
+            return [
+                'success' => true,
+                'is_simulation' => true,
+                'result_code' => 0,
+                'result_desc' => 'The service request is processed successfully. (Simulated)',
+                'response_code' => '0',
+            ];
+        }
+
+        $token = $this->getAccessToken();
+        if (! $token) {
+            return ['success' => false, 'message' => 'Failed to generate Daraja access token'];
+        }
+
+        $timestamp = now()->format('YmdHis');
+        $password = base64_encode($this->stkShortcode.$this->passkey.$timestamp);
+
+        $payload = [
+            'BusinessShortCode' => $this->stkShortcode,
+            'Password' => $password,
+            'Timestamp' => $timestamp,
+            'CheckoutRequestID' => $checkoutRequestId,
+        ];
+
+        try {
+            $response = Http::withToken($token)
+                ->post($this->baseUrl.'/mpesa/stkpushquery/v1/query', $payload);
+
+            if ($response->successful()) {
+                $data = $response->json();
+
+                return [
+                    'success' => true,
+                    'is_simulation' => false,
+                    'result_code' => isset($data['ResultCode']) ? (int) $data['ResultCode'] : null,
+                    'result_desc' => $data['ResultDesc'] ?? $data['ResponseDescription'] ?? null,
+                    'response_code' => $data['ResponseCode'] ?? null,
+                    'raw_response' => $data,
+                ];
+            }
+
+            Log::error('Daraja STK Query failed: '.$response->body());
+
+            return [
+                'success' => false,
+                'message' => $response->json('errorMessage') ?? 'STK query execution failed',
+                'raw_response' => $response->json(),
+            ];
+        } catch (\Exception $e) {
+            Log::error('Daraja STK Query exception: '.$e->getMessage());
 
             return ['success' => false, 'message' => $e->getMessage()];
         }
