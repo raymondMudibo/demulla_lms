@@ -35,9 +35,9 @@ class RegisteredUserController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'email' => 'required|string|lowercase|email|max:255|unique:'.User::class,
-            'phone_number' => ['required', 'string', 'unique:customers,phone_number', 'regex:/^(254|0|\+254)?(7|1)\d{8}$/'],
-            'id_number' => 'required|string|unique:customers,id_number|max:50',
+            'email' => 'nullable|string|lowercase|email|max:255|unique:'.User::class,
+            'phone_number' => ['required', 'string', 'unique:customers,phone_number', 'unique:users,phone_number', 'regex:/^(254|0|\+254)?(7|1)\d{8}$/'],
+            'id_number' => 'required|string|unique:customers,id_number|unique:users,id_number|max:50',
             'password' => ['required', 'confirmed', Rules\Password::defaults()],
         ]);
 
@@ -65,6 +65,8 @@ class RegisteredUserController extends Controller
             $user = User::create([
                 'name' => $request->name,
                 'email' => $request->email,
+                'phone_number' => $phone,
+                'id_number' => $request->id_number,
                 'password' => Hash::make($request->password),
                 'role' => 'customer',
                 'customer_id' => $customer->id,

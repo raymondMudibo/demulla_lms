@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Loan;
+use App\Models\MpesaCallbackLog;
 use App\Services\DisbursementService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -35,17 +36,46 @@ class DisbursementController extends Controller
 
     public function handleB2cCallback(Request $request, string $reference): JsonResponse
     {
-        Log::info("M-Pesa B2C callback received for reference {$reference}: ".json_encode($request->all()));
+        $payload = $request->all();
+        $result = $payload['Result'] ?? $payload;
+
+        // Extract transaction ID if present
+        $transactionId = $result['TransactionID'] ?? null;
+        if (! $transactionId && isset($result['ResultParameters']['ResultParameter'])) {
+            foreach ($result['ResultParameters']['ResultParameter'] as $param) {
+                if (($param['Key'] ?? '') === 'ReceiptNo' || ($param['Name'] ?? '') === 'TransactionID') {
+                    $transactionId = $param['Value'] ?? $transactionId;
+                }
+            }
+        }
+
+        // Persist callback directly to the database
+        $callbackLog = MpesaCallbackLog::create([
+            'type' => 'b2c_callback',
+            'reference' => $reference,
+            'conversation_id' => $result['ConversationID'] ?? null,
+            'originator_conversation_id' => $result['OriginatorConversationID'] ?? null,
+            'transaction_id' => $transactionId,
+            'result_code' => isset($result['ResultCode']) ? (int) $result['ResultCode'] : null,
+            'result_desc' => $result['ResultDesc'] ?? null,
+            'payload' => $payload,
+            'processing_status' => 'received',
+            'ip_address' => $request->ip(),
+        ]);
 
         try {
-            $this->disbursementService->processB2cCallback($reference, $request->all());
+            $this->disbursementService->processB2cCallback($reference, $payload);
+            $callbackLog->update(['processing_status' => 'processed']);
 
             return response()->json([
                 'ResultCode' => 0,
                 'ResultDesc' => 'Success',
             ]);
         } catch (\Exception $e) {
-            Log::error('Error processing B2C callback: '.$e->getMessage());
+            $callbackLog->update([
+                'processing_status' => 'failed',
+                'error_message' => $e->getMessage(),
+            ]);
 
             return response()->json([
                 'ResultCode' => 1,

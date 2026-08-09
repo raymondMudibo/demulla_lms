@@ -44,14 +44,14 @@ const submit = () => {
             </div>
 
             <div class="mt-4">
-                <InputLabel for="email" value="Email" />
+                <InputLabel for="email" value="Email (Optional)" />
 
                 <TextInput
                     id="email"
                     type="email"
                     class="mt-1 block w-full"
                     v-model="form.email"
-                    required
+                    placeholder="Optional (e.g. name@example.com)"
                     autocomplete="username"
                 />
 

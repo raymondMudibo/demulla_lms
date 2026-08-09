@@ -21,11 +21,35 @@ class RegistrationTest extends TestCase
         $response = $this->post('/register', [
             'name' => 'Test User',
             'email' => 'test@example.com',
+            'phone_number' => '0712345678',
+            'id_number' => '99887766',
             'password' => 'password',
             'password_confirmation' => 'password',
         ]);
 
         $this->assertAuthenticated();
-        $response->assertRedirect(route('dashboard', absolute: false));
+        $response->assertRedirect(route('portal.dashboard', absolute: false));
+    }
+
+    public function test_new_users_can_register_without_email(): void
+    {
+        $response = $this->post('/register', [
+            'name' => 'No Email User',
+            'email' => null,
+            'phone_number' => '0799887766',
+            'id_number' => '11223344',
+            'password' => 'password',
+            'password_confirmation' => 'password',
+        ]);
+
+        $this->assertAuthenticated();
+        $response->assertRedirect(route('portal.dashboard', absolute: false));
+
+        $this->assertDatabaseHas('users', [
+            'name' => 'No Email User',
+            'email' => null,
+            'phone_number' => '254799887766',
+            'id_number' => '11223344',
+        ]);
     }
 }

@@ -19,15 +19,39 @@ class AuthenticationTest extends TestCase
 
     public function test_users_can_authenticate_using_the_login_screen(): void
     {
-        $user = User::factory()->create();
-
-        $response = $this->post('/login', [
-            'email' => $user->email,
-            'password' => 'password',
+        $user = User::factory()->create([
+            'email' => 'user@example.com',
+            'phone_number' => '254712345678',
+            'id_number' => '12345678',
         ]);
 
+        // 1. Authenticate with Email
+        $response = $this->post('/login', [
+            'login' => $user->email,
+            'password' => 'password',
+        ]);
         $this->assertAuthenticated();
-        $response->assertRedirect(route('dashboard', absolute: false));
+        $response->assertRedirect(route('portal.dashboard', absolute: false));
+
+        auth()->logout();
+
+        // 2. Authenticate with local Phone Number (0712345678)
+        $responsePhone = $this->post('/login', [
+            'login' => '0712345678',
+            'password' => 'password',
+        ]);
+        $this->assertAuthenticated();
+        $responsePhone->assertRedirect(route('portal.dashboard', absolute: false));
+
+        auth()->logout();
+
+        // 3. Authenticate with ID Number (12345678)
+        $responseId = $this->post('/login', [
+            'login' => '12345678',
+            'password' => 'password',
+        ]);
+        $this->assertAuthenticated();
+        $responseId->assertRedirect(route('portal.dashboard', absolute: false));
     }
 
     public function test_users_can_not_authenticate_with_invalid_password(): void

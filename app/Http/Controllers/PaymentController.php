@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Loan;
+use App\Models\MpesaCallbackLog;
 use App\Services\ReconciliationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -51,17 +52,35 @@ class PaymentController extends Controller
 
     public function handleStkCallback(Request $request, string $checkout_reference): JsonResponse
     {
-        Log::info("M-Pesa STK callback received for reference {$checkout_reference}: ".json_encode($request->all()));
+        $payload = $request->all();
+        $stkCallback = $payload['Body']['stkCallback'] ?? $payload;
+
+        // Persist callback directly to the database
+        $callbackLog = MpesaCallbackLog::create([
+            'type' => 'stk_callback',
+            'reference' => $checkout_reference,
+            'merchant_request_id' => $stkCallback['MerchantRequestID'] ?? null,
+            'checkout_request_id' => $stkCallback['CheckoutRequestID'] ?? null,
+            'result_code' => isset($stkCallback['ResultCode']) ? (int) $stkCallback['ResultCode'] : null,
+            'result_desc' => $stkCallback['ResultDesc'] ?? null,
+            'payload' => $payload,
+            'processing_status' => 'received',
+            'ip_address' => $request->ip(),
+        ]);
 
         try {
-            $this->reconciliationService->processStkCallback($checkout_reference, $request->all());
+            $this->reconciliationService->processStkCallback($checkout_reference, $payload);
+            $callbackLog->update(['processing_status' => 'processed']);
 
             return response()->json([
                 'ResultCode' => 0,
                 'ResultDesc' => 'Success',
             ]);
         } catch (\Exception $e) {
-            Log::error('Error processing STK callback: '.$e->getMessage());
+            $callbackLog->update([
+                'processing_status' => 'failed',
+                'error_message' => $e->getMessage(),
+            ]);
 
             return response()->json([
                 'ResultCode' => 1,

@@ -20,11 +20,13 @@ class Disbursement extends Model
         'mpesa_receipt_number',
         'status',
         'failure_reason',
+        'raw_callback_payload',
         'disbursed_at',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
+        'raw_callback_payload' => 'array',
         'disbursed_at' => 'datetime',
     ];
 
